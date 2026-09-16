@@ -1765,20 +1765,19 @@ function vistaDashboard() {
   var nP = props.filter(function (p) { return String(p.servicio).indexOf('Porter') >= 0; }).length;
   var pct = props.length ? Math.round(nP / props.length * 100) : 0;
 
-  // FIX(FASE 1) #14: el saludo decía "Julio 2026" fijo; ahora usa la fecha real
-  // ... (stats, bannerRep, jHoyHtml, barras, nP, pct se calculan igual que antes) ...
+  // Fecha actual para el saludo (dinámico, no hardcodeado)
+  var ahora = new Date();
+  var periodoActual = MESES_ES[ahora.getMonth()] + ' ' + ahora.getFullYear();
 
+  // Resumen del día (barra de progreso clickeable)
   var dd = datosDelDia(hoy, '');
 
   return '<div class="anim space-y-6">'
     + '<div><h1 class="text-2xl lg:text-3xl font-extrabold">Dashboard</h1><p class="text-slate-500 text-sm mt-1">Hola, ' + esc(USUARIO.nombre) + ' · ' + esc(USUARIO.rol) + ' · ' + periodoActual + '</p></div>'
     + '<div class="grid grid-cols-2 xl:grid-cols-4 gap-3 lg:gap-5">' + stats + '</div>'
     + bannerRep
-    // ⬆️ NUEVO: Resumen del día (clic → detalle)
     + resumenDiaCard(dd)
-    // ⬆️ MOVIDO: Propiedades por ciudad ahora va aquí (ya era clickeable)
     + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-4">Propiedades por ciudad <span class="text-xs font-medium text-slate-400">(toca para filtrar)</span></h3>' + barras + '</div>'
-    // ⬇️ Al final: jornadas + dona
     + '<div class="grid lg:grid-cols-5 gap-5">'
     + '<div class="lg:col-span-3 bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-4">🗺️ Jornadas de hoy <span class="text-xs font-medium text-slate-400">(clic para abrir)</span></h3>' + jHoyHtml + '</div>'
     + '<div class="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-4">Porter vs Sweep</h3>'
@@ -1808,8 +1807,6 @@ function vistaDashboardTrab() {
       + '<span class="text-xs font-bold ' + (pr.pend ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700') + ' px-2.5 py-1 rounded-full shrink-0">' + pr.hechas + '/' + pr.total + '</span>'
       + '<span class="text-sky-500 font-bold shrink-0">→</span></button>';
   }).join('')
-    // FIX(FASE 1) #21: el enlace "Crea una jornada" aparecía incluso SIN cuadrilla
-    // (crearía una jornada huérfana). Ahora solo se ofrece con cuadrilla asignada.
     : '<p class="text-sm text-slate-400 p-4">No tienes jornadas para hoy. '
       + (mi && !jSem.length ? '<button onclick="formRuta(null)" class="font-bold text-sky-600 hover:underline">Crea una jornada →</button>' : '') + '</p>';
 
@@ -1827,6 +1824,9 @@ function vistaDashboardTrab() {
     + statCard('✅', 'Hechas esta semana', hechasSem, 'from-emerald-500 to-teal-600')
     + statCard('🗺️', 'Jornadas semana', jSem.length, 'from-indigo-500 to-violet-600', "ir('rutas')");
 
+  // ✅ ESTA LÍNEA VA AQUÍ — ANTES del return, NUNCA dentro de él
+  var ddT = datosDelDia(hoy, mi);
+
   var actHtml = ult.length ? ult.map(function (s) {
     var p = propDe(s.propId);
     return '<div class="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-slate-100 mb-2">'
@@ -1842,8 +1842,6 @@ function vistaDashboardTrab() {
     + '<p class="text-slate-500 text-sm mt-1">' + (crew ? esc(crew.nombre) + ' · ' + esc(crew.ciudad) : 'Sin cuadrilla asignada') + '</p></div>'
     + (!mi ? '<div class="bg-amber-50 border border-amber-300 rounded-2xl px-5 py-4 text-sm font-semibold text-amber-800">⚠️ No tienes cuadrilla asignada. Pide a un administrador que te asigne una para ver tus rutas.</div>' : '')
     + '<div class="grid grid-cols-2 xl:grid-cols-4 gap-3 lg:gap-5">' + stats + '</div>'
-      var ddT = datosDelDia(hoy, mi);
-  // ... y en el return, después de los stats:
     + (mi ? resumenDiaCard(ddT) : '')
     + '<div class="grid lg:grid-cols-2 gap-5">'
     + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-3">🗺️ Jornadas de hoy</h3>' + jHoyHtml + '</div>'
@@ -1852,7 +1850,6 @@ function vistaDashboardTrab() {
     + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-3">🕓 Actividad reciente de tu cuadrilla</h3>' + actHtml + '</div>'
     + '</div>';
 }
-
 
 /* ═══════════════════════════════════════════════════════════════════════════
    [JS-10] VISTA: CALENDARIO
