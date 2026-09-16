@@ -1320,8 +1320,17 @@ var TITULOS = {
   dashboard: 'Dashboard', rutas: 'Jornadas', ruta_detalle: 'Jornada', ruta_form: 'Jornada',
   calendario: 'Calendario', propiedades: 'Propiedades', propiedad_detalle: 'Propiedad',
   propiedad_form: 'Propiedad', cuadrillas: 'Cuadrillas', cuadrilla_detalle: 'Cuadrilla',
-  cuadrilla_form: 'Cuadrilla', reportes: 'Reportes', exportar: 'Exportar'
+  cuadrilla_form: 'Cuadrilla', reportes: 'Reportes', exportar: 'Exportar',
+  dia_detalle: 'Detalle del día'
 };
+
+/** Dashboard → detalle de los servicios de hoy (hechas/pendientes). */
+function irDiaDetalle() {
+  pushState();
+  estado.vista = 'dia_detalle';
+  estado.param = fechaISO(new Date());
+  cerrarMenu(); window.scrollTo(0, 0); renderApp();
+}
 
 /** Guarda la pantalla actual en la pila (máx. 15) con scroll y origen. */
 function pushState(referrerVista, referrerParam) {
@@ -1465,6 +1474,7 @@ function renderApp() {
   else if (estado.vista === 'cuadrillas') contentHtml = vistaCuadrillas();
   else if (estado.vista === 'cuadrilla_detalle') contentHtml = vistaCrewDetalle();
   else if (estado.vista === 'cuadrilla_form') contentHtml = rolOro() ? vistaCrewForm() : sinPermiso();
+  else if (estado.vista === 'dia_detalle') contentHtml = vistaDiaDetalle();
   else if (estado.vista === 'reportes') contentHtml = rolAdmin() ? vistaReportes() : sinPermiso('Los reportes solo están disponibles para administradores.');
   else if (estado.vista === 'exportar') contentHtml = rolAdmin() ? vistaExportar() : sinPermiso('La exportación solo está disponible para administradores.');
   else contentHtml = '<p>Vista no encontrada.</p>';
@@ -1599,6 +1609,115 @@ function statCard(ic, label, val, grad, fn) {
     + '<p class="text-2xl lg:text-3xl font-extrabold mt-1">' + val + '</p></' + (fn ? 'button' : 'div') + '>';
 }
 
+/** Banner de progreso del día (dashboard admin y trabajador). Clic → detalle. */
+function resumenDiaCard(dd) {
+  var cua = esTrabajador() ? miCua() : '';
+  var s = cua ? crewStyle(cua) : PALETA['Azul'];
+  return '<button onclick="irDiaDetalle()" class="w-full text-left bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5 hover:shadow-md hover:border-sky-300 transition group">'
+    + '<div class="flex items-center justify-between gap-3 flex-wrap mb-3">'
+    + '<div><h3 class="font-extrabold">📍 Servicios de hoy <span class="text-xs font-medium text-slate-400">' + fmtFecha(fechaISO(new Date())) + '</span></h3>'
+    + '<p class="text-[11px] text-slate-400 mt-0.5">' + dd.programadas.length + ' programadas' + (dd.extras.length ? ' · ' + dd.extras.length + ' fuera de programa' : '') + (cua ? ' · ' + esc(cua) : '') + '</p></div>'
+    + '<span class="text-xs font-bold text-sky-600 opacity-0 group-hover:opacity-100 transition">Ver detalle →</span></div>'
+    + '<div class="flex items-center gap-3">'
+    + '<div class="flex-1 h-4 bg-slate-100 rounded-full overflow-hidden"><div class="h-full ' + s.bar + ' rounded-full transition-all duration-500" style="width:' + dd.pct + '%"></div></div>'
+    + '<span class="text-sm font-extrabold shrink-0">' + dd.hechas.length + '/' + dd.programadas.length + '</span>'
+    + '<span class="text-xs font-bold ' + s.chip + ' px-2.5 py-1 rounded-full shrink-0">' + dd.pct + '%</span></div>'
+    + '<div class="flex gap-2 mt-3 flex-wrap text-[11px] font-bold">'
+    + '<span class="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700">✅ ' + dd.hechas.length + ' hechas</span>'
+    + '<span class="px-2.5 py-1 rounded-full bg-amber-100 text-amber-700">⏳ ' + dd.pendientes.length + ' pendientes</span>'
+    + (dd.extras.length ? '<span class="px-2.5 py-1 rounded-full bg-sky-100 text-sky-700">➕ ' + dd.extras.length + ' extra' + (dd.extras.length > 1 ? 's' : '') + '</span>' : '')
+    + '</div></button>';
+}
+
+
+/**
+ * Detalle de los servicios de HOY: pendientes y hechas, todo clickeable
+ * hacia la propiedad. El trabajador solo ve su cuadrilla.
+ */
+function vistaDiaDetalle() {
+  var iso = estado.param || fechaISO(new Date());
+  var cua = esTrabajador() ? miCua() : '';
+  var dd = datosDelDia(iso, cua);
+  var s = cua ? crewStyle(cua) : PALETA['Azul'];
+
+  // ── Tarjetas de PENDIENTES ──
+  var pendHtml = dd.pendientes.length ? dd.pendientes.map(function (p) {
+    return '<button onclick="verPropiedad(\'' + p.id + '\', \'dia_detalle\', \'' + iso + '\')" class="w-full text-left border rounded-xl p-3 transition hover:border-sky-300 hover:bg-sky-50/50 ' + (p.cuadrilla ? 'border-slate-100 bg-white' : 'border-amber-300 bg-amber-50/50') + '">'
+      + '<div class="flex items-center justify-between gap-2"><p class="text-sm font-bold truncate">' + esc(p.nombre) + '</p>'
+      + (p.cuadrilla ? chipCuad(p.cuadrilla) : '<span class="text-[10px] font-bold text-amber-600 shrink-0">⚠️ Sin cuadrilla</span>') + '</div>'
+      + '<div class="flex items-center gap-2 mt-1 flex-wrap">' + chipServ(p.servicio) + '<span class="text-[10px] text-slate-400">' + esc(p.ciudad) + '</span></div>'
+      + '</button>';
+  }).join('') : '<p class="text-sm text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center font-semibold">🎉 ¡Todo completado! No queda nada pendiente.</p>';
+
+  // ── Tarjetas de HECHAS (con el servicio registrado) ──
+  function cardsHechas(lista) {
+    return lista.map(function (p) {
+      var sv = dd.svHoy.filter(function (x) { return x.propId === p.id; });
+      var ultimo = sv[sv.length - 1];
+      return '<button onclick="verPropiedad(\'' + p.id + '\', \'dia_detalle\', \'' + iso + '\')" class="w-full text-left border border-emerald-100 bg-white rounded-xl p-3 transition hover:border-emerald-300 hover:bg-emerald-50/30">'
+        + '<div class="flex items-center justify-between gap-2"><p class="text-sm font-bold truncate">' + esc(p.nombre) + '</p>'
+        + (ultimo ? badgeServicio(ultimo.estado) : '') + '</div>'
+        + '<div class="flex items-center gap-2 mt-1 flex-wrap">' + chipServ(p.servicio)
+        + (ultimo ? chipCuad(ultimo.cuadrilla) + '<span class="text-[10px] text-slate-400">' + horaDe(ultimo.ts) + ' · ' + esc(ultimo.por) + '</span>' : '')
+        + (ultimo && ultimo.notas ? '<span class="text-[10px] text-slate-500 truncate">💬 ' + esc(ultimo.notas) + '</span>' : '')
+        + '</div></button>';
+    }).join('');
+  }
+
+  var extrasHtml = dd.extras.length
+    ? '<div class="mt-5"><h3 class="font-extrabold text-sm mb-2">➕ Fuera de programa <span class="text-xs font-medium text-slate-400">(servicios registrados hoy sin estar programadas)</span></h3>'
+      + '<div class="grid md:grid-cols-2 gap-2">' + cardsHechas(dd.extras) + '</div></div>'
+    : '';
+
+  return '<div class="anim space-y-5">'
+    + crumb([{ t: 'Inicio', fn: "ir('dashboard')" }, { t: 'Detalle del día' }])
+    + '<div><h1 class="text-2xl lg:text-3xl font-extrabold capitalize">📅 ' + fmtDiaFecha(iso) + '</h1>'
+    + '<p class="text-slate-500 text-sm mt-1">' + (cua ? 'Cuadrilla: ' + esc(cua) : 'Todas las cuadrillas') + ' · ' + dd.programadas.length + ' propiedades programadas</p></div>'
+    + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5">'
+    + '<div class="flex items-center gap-3">'
+    + '<div class="flex-1 h-5 bg-slate-100 rounded-full overflow-hidden"><div class="h-full ' + s.bar + ' rounded-full transition-all duration-500" style="width:' + dd.pct + '%"></div></div>'
+    + '<span class="text-lg font-extrabold">' + dd.pct + '%</span></div>'
+    + '<div class="flex gap-2 mt-3 flex-wrap text-xs font-bold">'
+    + '<span class="px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-700">✅ ' + dd.hechas.length + ' hechas</span>'
+    + '<span class="px-3 py-1.5 rounded-full bg-amber-100 text-amber-700">⏳ ' + dd.pendientes.length + ' pendientes</span>'
+    + '<span class="px-3 py-1.5 rounded-full bg-slate-100 text-slate-600">📋 ' + dd.svHoy.length + ' registro' + (dd.svHoy.length === 1 ? '' : 's') + ' hoy</span>'
+    + '</div></div>'
+    + '<div class="grid lg:grid-cols-2 gap-5">'
+    + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-3">⏳ Pendientes <span class="text-xs font-medium text-slate-400">(' + dd.pendientes.length + ')</span></h3>'
+    + '<div class="space-y-2">' + pendHtml + '</div></div>'
+    + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-3">✅ Hechas <span class="text-xs font-medium text-slate-400">(' + dd.hechas.length + ')</span></h3>'
+    + '<div class="space-y-2">' + (dd.hechas.length ? cardsHechas(dd.hechas) : '<p class="text-sm text-slate-400 p-4 text-center">Aún no se registra ningún servicio de los programados hoy.</p>') + '</div></div>'
+    + '</div>'
+    + extrasHtml
+    + '</div>';
+}
+
+
+/**
+ * Calcula el estado de los servicios de un día.
+ * @param {string} iso        Fecha 'YYYY-MM-DD'
+ * @param {string} cuaFiltro  '' = todos · nombre de cuadrilla (trabajador)
+ * @returns {programadas, svHoy, hechas, extras, pendientes, pct}
+ *  - programadas: propiedades activas con servicio ese día (regla o jornada)
+ *  - hechas:      programadas que YA tienen servicio registrado ese día
+ *  - extras:      servicios registrados en propiedades NO programadas ese día
+ *  - pendientes:  programadas aún sin servicio
+ */
+function datosDelDia(iso, cuaFiltro) {
+  var programadas = props.filter(function (p) {
+    if (cuaFiltro && p.cuadrilla !== cuaFiltro) return false;
+    return p.estado === 'Activa' && propTieneServicio(p, iso);
+  });
+  var svHoy = servicios.filter(function (s) { return s.fecha === iso && (!cuaFiltro || s.cuadrilla === cuaFiltro); });
+  var idsHechas = {};
+  svHoy.forEach(function (s) { idsHechas[s.propId] = 1; });
+  var hechas = programadas.filter(function (p) { return idsHechas[p.id]; });
+  var extras = props.filter(function (p) { return idsHechas[p.id] && !programadas.some(function (q) { return q.id === p.id; }); });
+  var pendientes = programadas.filter(function (p) { return !idsHechas[p.id]; });
+  var pct = programadas.length ? Math.round(hechas.length / programadas.length * 100) : 0;
+  return { programadas: programadas, svHoy: svHoy, hechas: hechas, extras: extras, pendientes: pendientes, pct: pct };
+}
+
 /** Dashboard para Admin Oro / Admin Plata. */
 function vistaDashboard() {
   if (esTrabajador()) return vistaDashboardTrab();
@@ -1647,13 +1766,19 @@ function vistaDashboard() {
   var pct = props.length ? Math.round(nP / props.length * 100) : 0;
 
   // FIX(FASE 1) #14: el saludo decía "Julio 2026" fijo; ahora usa la fecha real
-  var ahora = new Date();
-  var periodoActual = MESES_ES[ahora.getMonth()] + ' ' + ahora.getFullYear();
+  // ... (stats, bannerRep, jHoyHtml, barras, nP, pct se calculan igual que antes) ...
+
+  var dd = datosDelDia(hoy, '');
 
   return '<div class="anim space-y-6">'
     + '<div><h1 class="text-2xl lg:text-3xl font-extrabold">Dashboard</h1><p class="text-slate-500 text-sm mt-1">Hola, ' + esc(USUARIO.nombre) + ' · ' + esc(USUARIO.rol) + ' · ' + periodoActual + '</p></div>'
     + '<div class="grid grid-cols-2 xl:grid-cols-4 gap-3 lg:gap-5">' + stats + '</div>'
     + bannerRep
+    // ⬆️ NUEVO: Resumen del día (clic → detalle)
+    + resumenDiaCard(dd)
+    // ⬆️ MOVIDO: Propiedades por ciudad ahora va aquí (ya era clickeable)
+    + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-4">Propiedades por ciudad <span class="text-xs font-medium text-slate-400">(toca para filtrar)</span></h3>' + barras + '</div>'
+    // ⬇️ Al final: jornadas + dona
     + '<div class="grid lg:grid-cols-5 gap-5">'
     + '<div class="lg:col-span-3 bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-4">🗺️ Jornadas de hoy <span class="text-xs font-medium text-slate-400">(clic para abrir)</span></h3>' + jHoyHtml + '</div>'
     + '<div class="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-4">Porter vs Sweep</h3>'
@@ -1661,7 +1786,6 @@ function vistaDashboard() {
     + '<div class="absolute inset-2 sm:inset-2.5 bg-white rounded-full flex flex-col items-center justify-center"><p class="text-2xl font-extrabold">' + props.length + '</p><p class="text-[10px] text-slate-400 font-semibold">TOTAL</p></div></div>'
     + '<div class="space-y-2 text-sm min-w-0"><p class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-violet-500 shrink-0"></span><b>' + nP + '</b> Porter</p>'
     + '<p class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-amber-500 shrink-0"></span><b>' + (props.length - nP) + '</b> Sweep</p></div></div></div></div>'
-    + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-4">Propiedades por ciudad <span class="text-xs font-medium text-slate-400">(toca para filtrar)</span></h3>' + barras + '</div>'
     + '</div>';
 }
 
@@ -1718,6 +1842,9 @@ function vistaDashboardTrab() {
     + '<p class="text-slate-500 text-sm mt-1">' + (crew ? esc(crew.nombre) + ' · ' + esc(crew.ciudad) : 'Sin cuadrilla asignada') + '</p></div>'
     + (!mi ? '<div class="bg-amber-50 border border-amber-300 rounded-2xl px-5 py-4 text-sm font-semibold text-amber-800">⚠️ No tienes cuadrilla asignada. Pide a un administrador que te asigne una para ver tus rutas.</div>' : '')
     + '<div class="grid grid-cols-2 xl:grid-cols-4 gap-3 lg:gap-5">' + stats + '</div>'
+      var ddT = datosDelDia(hoy, mi);
+  // ... y en el return, después de los stats:
+    + (mi ? resumenDiaCard(ddT) : '')
     + '<div class="grid lg:grid-cols-2 gap-5">'
     + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-3">🗺️ Jornadas de hoy</h3>' + jHoyHtml + '</div>'
     + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-3">🏢 Mis propiedades</h3>' + propsHtml + '</div>'
@@ -2179,10 +2306,14 @@ function seleccionarDiaHist(iso) {
   renderApp();
 }
 
-/** Tarjeta compacta de servicio (usada en lista y en el panel del día). */
+/** Tarjeta compacta de servicio (lista y calendario de historial). Con 🗑️ para admins. */
 function servDetalleCard(s) {
+  var delBtn = rolAdmin()
+    ? '<button onclick="event.stopPropagation();abrirDelServicio(\'' + s.id + '\')" title="Eliminar servicio" class="text-slate-300 hover:text-rose-600 text-sm font-bold p-1 rounded-lg hover:bg-rose-50 transition shrink-0">🗑️</button>'
+    : '';
   return '<div class="border border-slate-100 rounded-xl p-3 hover:border-sky-200 transition">'
-    + '<div class="flex items-start justify-between gap-2"><p class="text-sm font-bold">' + fmtFecha(s.fecha) + '</p>' + badgeServicio(s.estado) + '</div>'
+    + '<div class="flex items-start justify-between gap-2"><p class="text-sm font-bold">' + fmtFecha(s.fecha) + '</p>'
+    + '<div class="flex items-center gap-1">' + badgeServicio(s.estado) + delBtn + '</div></div>'
     + '<div class="flex items-center gap-2 mt-1 flex-wrap">' + chipCuad(s.cuadrilla) + '<span class="text-[11px] text-slate-400">' + horaDe(s.ts) + ' · ' + esc(s.por) + '</span></div>'
     + (s.notas ? '<p class="text-xs text-slate-600 bg-slate-50 rounded-lg px-2.5 py-1.5 mt-2">💬 ' + esc(s.notas) + '</p>' : '')
     + '</div>';
@@ -2830,7 +2961,8 @@ function repCard(s) {
     + '<div class="flex items-start justify-between gap-3">'
     + '<div class="min-w-0"><button onclick="verPropiedad(\'' + s.propId + '\')" class="font-bold text-sm hover:text-sky-700 text-left truncate block max-w-full">' + esc(p ? p.nombre : s.propId + ' (eliminada)') + '</button>'
     + '<p class="text-[11px] text-slate-400 mt-0.5">' + fmtFecha(s.fecha) + ' · ' + horaDe(s.ts) + ' · por ' + esc(s.por) + '</p></div>'
-    + badgeServicio(s.estado) + '</div>'
+        + '<div class="flex items-center gap-1">' + badgeServicio(s.estado)
+    + (rolAdmin() ? '<button onclick="abrirDelServicio(\'' + s.id + '\')" title="Eliminar servicio" class="text-slate-300 hover:text-rose-600 text-sm font-bold p-1 rounded-lg hover:bg-rose-50 transition">🗑️</button>' : '') + '</div></div>'
     + (s.notas ? '<p class="text-sm text-slate-600 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2 mt-2">💬 ' + esc(s.notas) + '</p>' : '')
     + '<div class="flex items-center justify-between mt-2 gap-2 flex-wrap">' + chipCuad(s.cuadrilla)
     + (leido ? '<span class="text-[11px] font-bold text-emerald-600">✓ Leído</span>'
@@ -3163,6 +3295,54 @@ async function quitarItemJornada(jornId, pid) {
 
   j.items = j.items.filter(function (i) { return i.propId !== pid; });
   renderApp(); toast('🗑️ Propiedad quitada de la ruta');
+}
+
+/* ── 16.i ELIMINAR SERVICIO DEL HISTORIAL (solo admins) ──
+   Para corregir equivocaciones (ej. se registró en la propiedad equivocada).
+   Flujo: modal → respaldo obligatorio → borrar en la nube → REVERTIR el item
+   de jornada vinculado a 'Pendiente' (para que se vuelva a registrar bien). */
+async function abrirDelServicio(sid) {
+  if (!rolAdmin()) return;
+  var s = servicios.find(function (x) { return x.id === sid; });
+  if (!s) return;
+  var p = propDe(s.propId);
+
+  var ok = await confirmarModal({
+    tipo: 'warn',
+    titulo: '¿Eliminar este servicio?',
+    mensaje: '<b>' + esc(p ? p.nombre : s.propId) + '</b><br>'
+      + fmtFecha(s.fecha) + ' · ' + horaDe(s.ts) + ' · por ' + esc(s.por) + '<br>'
+      + badgeServicio(s.estado)
+      + (s.notas ? '<p class="text-xs text-slate-500 mt-2">💬 ' + esc(s.notas) + '</p>' : '')
+      + '<div class="mt-3 text-[11px] text-sky-700 bg-sky-50 border border-sky-200 rounded-xl px-3 py-2 font-semibold text-left">ℹ️ Si este servicio venía de una jornada, esa propiedad volverá a <b>Pendiente</b> para registrarse correctamente.</div>'
+      + '<div class="mt-2 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 font-semibold text-left">🔒 Se generará respaldo antes de eliminar.</div>',
+    textoOk: 'Sí, eliminar',
+    textoCancelar: 'Cancelar'
+  });
+  if (!ok) return;
+
+  // Respaldo obligatorio (archivo + papelera local)
+  respaldarEliminacion('HWC_respaldo_servicio_' + s.fecha + '_' + String(s.id).slice(0, 8) + '.json',
+    'Servicio eliminado', { tipo: 'servicio', servicio: s, propiedad: p });
+
+  toggleLoading(true);
+  // 1) Revertir items de jornada que apuntaban a este servicio (nube)
+  await DB.from('journey_items').update({ status: 'Pendiente', service_id: null }).eq('service_id', sid);
+  // 2) Borrar el servicio (nube)
+  const { error } = await DB.from('services').delete().eq('id', sid);
+  toggleLoading(false);
+  if (error) { console.error(error); toast('❌ No se pudo eliminar el servicio'); return; }
+
+  // 3) Memoria: revertir items + quitar el servicio
+  jornadas.forEach(function (j) {
+    j.items.forEach(function (it) {
+      if (it.servId === sid) { it.estado = 'Pendiente'; it.servId = null; }
+    });
+  });
+  servicios = servicios.filter(function (x) { return x.id !== sid; });
+
+  renderApp();
+  toast('🗑️ Servicio eliminado · respaldo generado');
 }
 
 /* ── 16.d MODAL: ASIGNAR CUADRILLA (rápido) ── */
