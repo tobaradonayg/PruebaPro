@@ -789,6 +789,11 @@ var estado = {
   // ── Mini-calendario del detalle de propiedad ──
   propCalMes: new Date().getMonth(),
   propCalAno: new Date().getFullYear(),
+    // ── Historial de servicios (vista detalle de propiedad) ──
+  propHistVista: 'lista',              // 'lista' | 'calendario'
+  propHistMes: new Date().getMonth(),  // mes del calendario de historial
+  propHistAno: new Date().getFullYear(),
+  propHistDiaSel: null,                // ISO del día seleccionado (o null)
   // ── Propiedades: filtros y orden ──
   filtros: { q: '', ciudad: '', servicio: '', cuadrilla: '', estado: '' },
   orden: 'ciudad',         // 'ciudad' | 'nombre' | 'costo'
@@ -1347,7 +1352,13 @@ function ir(v) { pushState(); estado.vista = v; estado.param = null; cerrarMenu(
 /* ── Navegación a detalles/forms (con permisos donde aplica) ── */
 function verPropiedad(id, refVista, refParam) {
   pushState(refVista, refParam);
-  estado.vista = 'propiedad_detalle'; estado.param = id; cerrarMenu(); window.scrollTo(0, 0); renderApp();
+  estado.vista = 'propiedad_detalle'; estado.param = id;
+  // El calendario de historial siempre abre en el mes actual
+  var h = new Date();
+  estado.propHistMes = h.getMonth();
+  estado.propHistAno = h.getFullYear();
+  estado.propHistDiaSel = null;
+  cerrarMenu(); window.scrollTo(0, 0); renderApp();
 }
 function formPropiedad(id) {
   if (!rolOro()) { toast('🔒 Solo Admin Oro puede crear o editar propiedades'); return; }
@@ -1998,12 +2009,13 @@ function propCard(p) {
 
 /* ── 11.b DETALLE ── */
 
-/** Detalle de propiedad: info, historial, próximos servicios y mini-calendario. */
+/** Detalle de propiedad: info, programación (mini-calendario), próximos
+ *  servicios y historial (lista o calendario). */
 function vistaPropDetalle() {
   var p = propDe(estado.param);
   if (!p) return '<div class="p-10 text-center"><p class="text-4xl mb-2">🚫</p><p class="font-bold">Propiedad no encontrada</p><button onclick="ir(\'propiedades\')" class="mt-3 text-sm font-semibold text-sky-600 hover:underline">Volver a propiedades</button></div>';
 
-  // Migas contextuales: dependen de desde dónde se navegó aquí (pushState)
+  // Migas contextuales (según de dónde se navegó)
   var prev = estado.history[estado.history.length - 1] || {};
   var crumbs = [{ t: 'Inicio', fn: "ir('dashboard')" }];
   if (prev.refVista === 'ruta_detalle' && prev.refParam) {
@@ -2026,15 +2038,19 @@ function vistaPropDetalle() {
 
   function info(label, val) { return '<div><p class="text-[10px] font-bold uppercase tracking-wide text-slate-400">' + label + '</p><p class="text-sm font-semibold mt-0.5">' + val + '</p></div>'; }
 
-  var hist = svcs.length ? svcs.map(function (s) {
-    return '<div class="border border-slate-100 rounded-xl p-3 hover:border-sky-200 transition">'
-      + '<div class="flex items-start justify-between gap-2"><p class="text-sm font-bold">' + fmtFecha(s.fecha) + '</p>' + badgeServicio(s.estado) + '</div>'
-      + '<div class="flex items-center gap-2 mt-1 flex-wrap">' + chipCuad(s.cuadrilla) + '<span class="text-[11px] text-slate-400">' + horaDe(s.ts) + ' · ' + esc(s.por) + '</span></div>'
-      + (s.notas ? '<p class="text-xs text-slate-600 bg-slate-50 rounded-lg px-2.5 py-1.5 mt-2">💬 ' + esc(s.notas) + '</p>' : '')
-      + '</div>';
-  }).join('') : '<p class="text-sm text-slate-400 p-4">Sin servicios registrados todavía.</p>';
+  // Historial: tarjeta de servicio (reutilizada por lista y calendario)
+  var hist = svcs.length ? svcs.map(servDetalleCard).join('') : '<p class="text-sm text-slate-400 p-4">Sin servicios registrados todavía.</p>';
 
-  // Próximos servicios (con borrador para admins, ver eliminarServicioFuturo)
+  // Toggle Lista / Calendario del historial
+  var histEsCal = estado.propHistVista === 'calendario';
+  var histHeader = '<div class="flex items-center justify-between gap-2 flex-wrap mb-3">'
+    + '<h3 class="font-extrabold">🧾 Historial de servicios <span class="text-xs font-medium text-slate-400">(' + svcs.length + ')</span></h3>'
+    + '<div class="flex gap-1 bg-slate-100 p-1 rounded-xl">'
+    + '<button onclick="cambiarPropHistVista(\'lista\')" class="px-3 py-1.5 rounded-lg font-bold text-xs transition ' + (!histEsCal ? 'bg-white text-sky-600 shadow' : 'text-slate-500') + '">📋 Lista</button>'
+    + '<button onclick="cambiarPropHistVista(\'calendario\')" class="px-3 py-1.5 rounded-lg font-bold text-xs transition ' + (histEsCal ? 'bg-white text-sky-600 shadow' : 'text-slate-500') + '">📅 Calendario</button>'
+    + '</div></div>';
+
+  // Próximos servicios (con borrador para admins)
   var proxHtml = prox.length ? prox.map(function (d) {
     var iso = fechaISO(d);
     var l = 'LMXJVSD'[(d.getDay() + 6) % 7];
@@ -2047,7 +2063,7 @@ function vistaPropDetalle() {
       + '</div>';
   }).join('') : '<p class="text-sm text-slate-400 p-4">Define días o ciclo para calcular próximos.</p>';
 
-  // Mini-calendario del mes (verde/azul = día con servicio)
+  // Mini-calendario de PROGRAMACIÓN (días que le toca servicio)
   var pMes = estado.propCalMes, pAno = estado.propCalAno;
   var pPrimerDia = new Date(pAno, pMes, 1);
   var pUltimoDia = new Date(pAno, pMes + 1, 0);
@@ -2056,7 +2072,7 @@ function vistaPropDetalle() {
 
   var calHtml = '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5">';
   calHtml += '<div class="flex items-center justify-between mb-3">';
-  calHtml += '<h3 class="font-extrabold text-sm">📅 Calendario</h3>';
+  calHtml += '<h3 class="font-extrabold text-sm">📅 Programación</h3>';
   calHtml += '<div class="flex items-center gap-2">';
   calHtml += '<button onclick="cambiarPropMes(-1)" class="w-7 h-7 rounded-lg border border-slate-200 hover:bg-slate-50 font-bold flex items-center justify-center text-xs">←</button>';
   calHtml += '<span class="text-xs font-bold capitalize">' + MESES_ES[pMes] + ' ' + pAno + '</span>';
@@ -2068,7 +2084,7 @@ function vistaPropDetalle() {
   for (var i = 0; i < pStartDay; i++) calHtml += '<div class="h-7 bg-slate-50 rounded-md"></div>';
   for (var pd = 1; pd <= pDaysInMonth; pd++) {
     var pIso = pAno + '-' + String(pMes + 1).padStart(2, '0') + '-' + String(pd).padStart(2, '0');
-    var hasServ = propTieneServicio(p, pIso); // ♻️ antes: tieneServicioEseDia solo (no veía jornadas)
+    var hasServ = propTieneServicio(p, pIso);
     calHtml += '<div class="h-7 flex items-center justify-center rounded-md text-[10px] font-bold ' + (hasServ ? 'bg-sky-500 text-white shadow' : 'bg-slate-50 text-slate-500') + '">' + pd + '</div>';
   }
   calHtml += '</div></div>';
@@ -2097,13 +2113,20 @@ function vistaPropDetalle() {
     + '<div class="col-span-2"><p class="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1">Días programados</p><div class="flex gap-1">' + diasBadges(p) + '</div></div>'
     + '</div>'
     + (p.notas ? '<div class="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-sm text-amber-800">📝 ' + esc(p.notas) + '</div>' : '')
-    + '<div class="grid lg:grid-cols-3 gap-5">'
-    + '<div class="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-3">🧾 Historial de servicios <span class="text-xs font-medium text-slate-400">(' + svcs.length + ')</span></h3><div class="space-y-2">' + hist + '</div></div>'
-    + '<div class="space-y-5">'
-    + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-3">📅 Próximos servicios</h3>' + proxHtml + '</div>'
+
+    /* ── NUEVO ORDEN: Programación + Próximos ARRIBA (lado a lado en PC;
+          en móvil se apilan con Programación primero) ── */
+    + '<div class="grid lg:grid-cols-2 gap-5">'
     + calHtml
+    + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5"><h3 class="font-extrabold mb-3">🔜 Próximos servicios</h3>' + proxHtml + '</div>'
     + '</div>'
-    + '</div></div>';
+
+    /* ── Historial: full-width, con toggle Lista/Calendario ── */
+    + '<div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 sm:p-5">'
+    + histHeader
+    + (histEsCal ? histCalendarioHtml(p) : '<div class="space-y-2">' + hist + '</div>')
+    + '</div>'
+    + '</div>';
 }
 
 /** Suspende/reactiva la propiedad (persistente en Supabase). Solo Admin Oro. */
@@ -2120,6 +2143,120 @@ async function togglePropEstado(id) {
   p.estado = newStatus;
   renderApp();
   toast(p.estado === 'Activa' ? '✅ Propiedad reactivada' : '⏸️ Propiedad suspendida');
+}
+
+/* ── HISTORIAL: alternar Lista / Calendario ── */
+
+/** Alterna la vista del historial de servicios del detalle de propiedad. */
+function cambiarPropHistVista(v) {
+  estado.propHistVista = v;
+  estado.propHistDiaSel = null;
+  renderApp();
+}
+
+/** Avanza/retrocede el mes del calendario de historial. */
+function cambiarPropHistMes(dir) {
+  var nuevoMes = estado.propHistMes + dir;
+  if (nuevoMes < 0) { nuevoMes = 11; estado.propHistAno--; }
+  else if (nuevoMes > 11) { nuevoMes = 0; estado.propHistAno++; }
+  estado.propHistMes = nuevoMes;
+  estado.propHistDiaSel = null;
+  renderApp();
+}
+
+/** Regresa el calendario de historial al mes actual. */
+function irHistHoy() {
+  var h = new Date();
+  estado.propHistMes = h.getMonth();
+  estado.propHistAno = h.getFullYear();
+  estado.propHistDiaSel = null;
+  renderApp();
+}
+
+/** Selecciona/deselecciona un día del calendario de historial. */
+function seleccionarDiaHist(iso) {
+  estado.propHistDiaSel = estado.propHistDiaSel === iso ? null : iso;
+  renderApp();
+}
+
+/** Tarjeta compacta de servicio (usada en lista y en el panel del día). */
+function servDetalleCard(s) {
+  return '<div class="border border-slate-100 rounded-xl p-3 hover:border-sky-200 transition">'
+    + '<div class="flex items-start justify-between gap-2"><p class="text-sm font-bold">' + fmtFecha(s.fecha) + '</p>' + badgeServicio(s.estado) + '</div>'
+    + '<div class="flex items-center gap-2 mt-1 flex-wrap">' + chipCuad(s.cuadrilla) + '<span class="text-[11px] text-slate-400">' + horaDe(s.ts) + ' · ' + esc(s.por) + '</span></div>'
+    + (s.notas ? '<p class="text-xs text-slate-600 bg-slate-50 rounded-lg px-2.5 py-1.5 mt-2">💬 ' + esc(s.notas) + '</p>' : '')
+    + '</div>';
+}
+
+/**
+ * Calendario mensual del HISTORIAL de servicios de una propiedad.
+ * Cada día muestra puntos de color según el resultado (verde=Completado,
+ * rojo=No asistió). Al tocar un día con servicios, se despliegan debajo.
+ */
+function histCalendarioHtml(p) {
+  var mes = estado.propHistMes, ano = estado.propHistAno;
+  var primerDia = new Date(ano, mes, 1);
+  var ultimoDia = new Date(ano, mes + 1, 0);
+  var startDay = (primerDia.getDay() + 6) % 7;
+  var daysInMonth = ultimoDia.getDate();
+  var hoy = fechaISO(new Date());
+
+  // Agrupa los servicios de esta propiedad por fecha ISO
+  var porFecha = {};
+  servicios.forEach(function (s) {
+    if (s.propId === p.id) {
+      if (!porFecha[s.fecha]) porFecha[s.fecha] = [];
+      porFecha[s.fecha].push(s);
+    }
+  });
+
+  // Navegación de mes
+  var html = '<div class="flex items-center justify-between gap-2 mb-2">'
+    + '<button onclick="cambiarPropHistMes(-1)" class="w-7 h-7 rounded-lg border border-slate-200 hover:bg-slate-50 font-bold flex items-center justify-center text-xs">←</button>'
+    + '<span class="text-xs font-bold capitalize">' + MESES_ES[mes] + ' ' + ano + '</span>'
+    + '<div class="flex gap-1">'
+    + '<button onclick="irHistHoy()" class="px-2.5 h-7 rounded-lg border border-slate-200 hover:bg-slate-50 font-bold text-[10px] text-slate-500 transition">HOY</button>'
+    + '<button onclick="cambiarPropHistMes(1)" class="w-7 h-7 rounded-lg border border-slate-200 hover:bg-slate-50 font-bold flex items-center justify-center text-xs">→</button>'
+    + '</div></div>';
+
+  // Encabezado de días
+  html += '<div class="grid grid-cols-7 gap-1 text-center mb-1">';
+  DIAS.forEach(function (dd) { html += '<span class="text-[10px] font-bold text-slate-400">' + dd[0] + '</span>'; });
+  html += '</div><div class="grid grid-cols-7 gap-1">';
+
+  for (var i = 0; i < startDay; i++) html += '<div class="h-12 sm:h-14 bg-slate-50 rounded-lg"></div>';
+  for (var d = 1; d <= daysInMonth; d++) {
+    var iso = ano + '-' + String(mes + 1).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+    var delDia = porFecha[iso] || [];
+    var sel = estado.propHistDiaSel === iso;
+    var isHoy = iso === hoy;
+
+    // Puntos de color según resultado (máx. 4 visibles)
+    var puntos = delDia.slice(0, 4).map(function (s) {
+      return '<span class="w-1.5 h-1.5 rounded-full ' + (s.estado === 'Completado' ? 'bg-emerald-500' : 'bg-rose-500') + '"></span>';
+    }).join('');
+
+    html += '<button onclick="seleccionarDiaHist(\'' + iso + '\')" class="h-12 sm:h-14 rounded-lg border p-1 flex flex-col items-center transition '
+      + (sel ? 'border-sky-500 bg-sky-50 ring-2 ring-sky-200'
+        : (delDia.length ? 'border-slate-200 bg-white hover:border-sky-300' : 'border-slate-100 bg-white')) + '">'
+      + '<span class="text-[11px] font-bold ' + (isHoy ? 'bg-sky-100 text-sky-600 rounded-full w-5 h-5 flex items-center justify-center' : 'text-slate-600') + '">' + d + '</span>'
+      + (delDia.length ? '<div class="flex gap-0.5 mt-auto mb-0.5">' + puntos + '</div>' : '')
+      + '</button>';
+  }
+  html += '</div>';
+
+  // Panel del día seleccionado: servicios de ese día
+  if (estado.propHistDiaSel) {
+    var svDia = porFecha[estado.propHistDiaSel] || [];
+    html += '<div class="mt-3 border-t border-slate-100 pt-3">'
+      + '<p class="text-xs font-bold text-slate-500 capitalize mb-2">📅 ' + fmtDiaFecha(estado.propHistDiaSel) + '</p>';
+    html += svDia.length
+      ? '<div class="space-y-2">' + svDia.map(servDetalleCard).join('') + '</div>'
+      : '<p class="text-sm text-slate-400 p-3 text-center bg-slate-50 rounded-xl">Sin servicios registrados este día.</p>';
+    html += '</div>';
+  }
+
+  return html;
 }
 
 /* ── 11.c FORMULARIO ── */
@@ -2880,6 +3017,22 @@ async function guardarServ() {
   if (!SERV_ACT) return cerrarServModal();
   var p = propDe(SERV_ACT); if (!p) return cerrarServModal();
   var f = $('svFecha').value; if (!f) { toast('⚠️ Selecciona una fecha'); return; }
+
+  // DOBLE VERIFICACIÓN: ¿la propiedad tiene servicio programado ese día?
+  // (revisa regla de frecuencia Y jornadas especiales — propTieneServicio [JS-06])
+  if (!propTieneServicio(p, f)) {
+    var seguir = await confirmarModal({
+      tipo: 'warn',
+      titulo: 'Servicio fuera de horario',
+      mensaje: 'Esta propiedad <b>no tiene servicio programado</b> para el <b>' + fmtDiaFecha(f) + '</b> (' + LETRA_A_DIA[letraDeFecha(f)] + ').'
+        + '<br><br>Programación regular: <b>' + (diasTexto(p) || 'sin días definidos') + '</b>'
+        + '<br><br>¿Deseas registrar este servicio de todas formas?',
+      textoOk: 'Sí, registrar',
+      textoCancelar: 'No, cancelar'
+    });
+    if (!seguir) return;
+  }
+  
   var crewName = $('svCua').value;
   var crewObj = crews.find(function (c) { return c.nombre === crewName; });
 
