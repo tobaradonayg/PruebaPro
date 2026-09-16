@@ -1188,9 +1188,12 @@ function cambiarPropMes(dir) {
  * Solo Admin Oro. Requiere que el item exista en la nube (tenga UUID);
  * los items auto-generados sin persistir caen en el mensaje informativo.
  */
+/**
+ * Elimina un servicio FUTURO (item de jornada) con confirmación en modal
+ * y respaldo obligatorio antes del borrado en la nube. Solo Admin.
+ */
 async function eliminarServicioFuturo(propId, iso) {
   if (!rolAdmin()) return;
-  if (!confirm('¿Eliminar este servicio programado para el ' + iso + '?')) return;
 
   // Localiza la jornada de esa fecha que contenga la propiedad
   var jornada = null, item = null;
@@ -1200,18 +1203,32 @@ async function eliminarServicioFuturo(propId, iso) {
       if (it) { jornada = jornadas[i]; item = it; break; }
     }
   }
+  if (!jornada || !item) { toast('ℹ️ No se encontró el servicio futuro en la base de datos'); return; }
 
-  if (jornada && item && item.id) {
-    toggleLoading(true);
+  var p = propDe(propId);
+  var ok = await confirmarModal({
+    tipo: 'warn',
+    titulo: '¿Eliminar servicio programado?',
+    mensaje: '<b>' + esc(p ? p.nombre : propId) + '</b> del ' + fmtFecha(iso)
+      + '<br>Jornada de ' + esc(jornada.cuadrilla) + '.'
+      + '<div class="mt-3 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 font-semibold text-left">🔒 Se generará respaldo antes de eliminar.</div>',
+    textoOk: 'Sí, eliminar',
+    textoCancelar: 'Cancelar'
+  });
+  if (!ok) return;
+
+  // Respaldo del item eliminado
+  respaldarEliminacion('HWC_respaldo_programacion_' + iso + '.json', 'Servicio futuro eliminado', { tipo: 'programacion', propiedadId: propId, propiedad: p, fecha: iso, jornada: { id: jornada.id, cuadrilla: jornada.cuadrilla }, item: item });
+
+  toggleLoading(true);
+  if (item.id) { // solo hay algo que borrar en la nube si tiene UUID real
     const { error } = await DB.from('journey_items').delete().eq('id', item.id);
-    toggleLoading(false);
-    if (error) { toast('❌ Error al eliminar en la nube'); return; } // FIX(FASE 1): antes se ignoraba el error
-    jornada.items = jornada.items.filter(function (x) { return x.propId !== propId; });
-    toast('🗑️ Servicio futuro eliminado de la nube');
-    renderApp();
-  } else {
-    toast('ℹ️ No se encontró el servicio futuro en la base de datos');
+    if (error) { toggleLoading(false); console.error(error); toast('❌ Error al eliminar en la nube'); return; }
   }
+  toggleLoading(false);
+  jornada.items = jornada.items.filter(function (x) { return x.propId !== propId; });
+  toast('🗑️ Servicio futuro eliminado · respaldo generado');
+  renderApp();
 }
 
 /**
@@ -3075,8 +3092,14 @@ async function guardarAsignarCua() {
 
     // Advertencia si la fecha no corresponde a la frecuencia habitual
     if (!tieneServicioEseDia(p, fechaSel)) {
-      var confirmar = confirm('⚠️ ATENCIÓN:\n\nEsta propiedad no tiene servicio programado regularmente para el ' + fechaSel + '.\n\n¿Deseas agregar este servicio especial de todas formas?');
-      if (!confirmar) return;
+      var seguir = await confirmarModal({
+        tipo: 'warn',
+        titulo: 'Servicio fuera de horario',
+        mensaje: 'Esta propiedad <b>no tiene servicio programado regularmente</b> para el ' + fmtFecha(fechaSel) + '.<br><br>¿Deseas agregar este servicio especial de todas formas?',
+        textoOk: 'Sí, agregar',
+        textoCancelar: 'No, cancelar'
+      });
+      if (!seguir) return;
     }
 
     var crewName = (crews.find(function (c) { return c.id === ASIGN_CREW_ID; }) || {}).nombre || '';
@@ -3175,72 +3198,117 @@ function refrescarBusquedaPropsCrew(q) {
   }).join('') : '<p class="text-sm text-slate-400 text-center py-6">' + (q ? 'Sin resultados' : 'Todas las propiedades ya están asignadas a esta cuadrilla') + '</p>';
 }
 
-/* ── 16.g MODAL: ELIMINAR (genérico) ── */
-
-function abrirDel(tipo, id) {
+/* ── 16.g ELIMINACIÓN (modal genérico + RESPALDO OBLIGATORIO) ──
+   Flujo: validar → modal de confirmación → respaldar (descarga + papelera)
+   → borrar en Supabase (hijos primero, simulando CASCADE) → actualizar memoria. */
+async function abrirDel(tipo, id) {
   if (!rolOro()) return;
-  var titulo = '', info = '';
-  if (tipo === 'prop') { var p = propDe(id); if (!p) return; titulo = '¿Eliminar propiedad?'; info = p.nombre + ' (' + p.id + ') · Se borrarán también sus servicios.'; }
-  else if (tipo === 'crew') { titulo = '¿Eliminar cuadrilla?'; info = id + ' · Las propiedades quedarán sin cuadrilla asignada.'; }
-  else if (tipo === 'jornada') { var j = jornadaDe(id); if (!j) return; titulo = '¿Eliminar jornada?'; info = (j.nombre || j.cuadrilla) + ' · ' + fmtFecha(j.fecha); }
-  else return;
-  DEL = { tipo: tipo, id: id };
-  $('delTitulo').textContent = titulo; $('delInfo').textContent = info;
-  $('modalDel').classList.remove('hidden');
-}
-function cerrarDel() { $('modalDel').classList.add('hidden'); DEL = null; }
+  var titulo = '', info = '', respaldo = null, archivo = '';
+  var hoy = fechaISO(new Date());
 
-/**
- * Ejecuta el borrado en Supabase y actualiza memoria.
- * NOTA(FASE 2): si falla, casi siempre es por FKs sin ON DELETE CASCADE
- * (ej. services/journey_items que referencian la propiedad). Configurar
- * las cascadas en Supabase o borrar hijos primero.
- */
-async function confirmarDel() {
-  if (!DEL) return cerrarDel();
-  var t = DEL.tipo, id = DEL.id;
+  if (tipo === 'prop') {
+    var p = propDe(id); if (!p) return;
+    var susServs = servicios.filter(function (s) { return s.propId === p.id; });
+    var susItems = [];
+    jornadas.forEach(function (j) {
+      j.items.forEach(function (it) { if (it.propId === p.id) susItems.push({ jornadaId: j.id, jornadaFecha: j.fecha, item: it }); });
+    });
+    titulo = '¿Eliminar propiedad?';
+    info = '<b>' + esc(p.nombre) + '</b> (' + esc(p.code || p.id) + ')<br>' + susServs.length + ' servicio(s) · ' + susItems.length + ' programación(es) en jornadas.';
+    archivo = 'HWC_respaldo_propiedad_' + (p.code || p.id) + '_' + hoy + '.json';
+    respaldo = { tipo: 'propiedad', propiedad: p, servicios: susServs, programaciones: susItems };
 
-  toggleLoading(true);
-  if (t === 'prop') {
-    const { error } = await DB.from('properties').delete().eq('id', id);
-    toggleLoading(false);
-    if (error) { console.error(error); toast('❌ No se pudo eliminar (¿tiene servicios o items asociados?)'); cerrarDel(); return; }
-    props = props.filter(function (p) { return p.id !== id; });
-    toast('🗑️ Propiedad eliminada de la nube');
-    ir('propiedades');
-  }
-  else if (t === 'crew') {
+  } else if (tipo === 'crew') {
     var crew = crews.find(function (c) { return c.nombre === id; });
-    if (crew) {
-      const { error } = await DB.from('crews').delete().eq('id', crew.id);
-      if (error) { toggleLoading(false); console.error(error); toast('❌ No se pudo eliminar la cuadrilla'); cerrarDel(); return; }
-      // Quedan sin cuadrilla en memoria (en la nube crew_id queda NULL si hay ON DELETE SET NULL)
-      props.forEach(function (p) { if (p.cuadrilla === id) { p.cuadrilla = ''; p.crew_id = null; } });
-    }
+    if (!crew) return;
+    var susJ = jornadas.filter(function (j) { return j.cuadrilla === crew.nombre; });
+    var susSv = servicios.filter(function (s) { return s.cuadrilla === crew.nombre; });
+    var susP = props.filter(function (p2) { return p2.cuadrilla === crew.nombre; });
+    titulo = '¿Eliminar cuadrilla?';
+    info = '<b>' + esc(crew.nombre) + '</b><br>' + susP.length + ' propiedad(es) quedarán sin cuadrilla · ' + susJ.length + ' jornada(s) serán eliminadas · ' + susSv.length + ' servicio(s) del historial se conservan (sin cuadrilla).';
+    archivo = 'HWC_respaldo_cuadrilla_' + crew.nombre.replace(/\s+/g, '_') + '_' + hoy + '.json';
+    respaldo = { tipo: 'cuadrilla', cuadrilla: crew, jornadas: susJ, propiedadesAfectadas: susP, serviciosHistoricos: susSv };
+
+  } else if (tipo === 'jornada') {
+    var j = jornadaDe(id); if (!j) return;
+    titulo = '¿Eliminar jornada?';
+    info = '<b>' + esc(j.nombre || ('Jornada ' + j.cuadrilla)) + '</b> · ' + fmtFecha(j.fecha) + '<br>' + j.items.length + ' propiedad(es) en la ruta.';
+    archivo = 'HWC_respaldo_jornada_' + j.fecha + '_' + String(j.id).slice(0, 8) + '.json';
+    respaldo = { tipo: 'jornada', jornada: j };
+  } else return;
+
+  // 1) Confirmación con modal propio del sistema
+  var ok = await confirmarModal({
+    tipo: 'danger',
+    titulo: titulo,
+    mensaje: info
+      + '<div class="mt-3 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 font-semibold text-left">🔒 Respaldo obligatorio: se descargará un archivo con TODA esta información y quedará registrada en la papelera local antes de eliminar.</div>',
+    textoOk: 'Sí, eliminar',
+    textoCancelar: 'Cancelar'
+  });
+  if (!ok) return;
+
+  // 2) RESPALDO (nunca se borra sin esto)
+  respaldarEliminacion(archivo, titulo.replace('¿', '').replace('?', ''), respaldo);
+
+  // 3) BORRADO EN LA NUBE (hijos primero, simulando CASCADE)
+  toggleLoading(true);
+  if (tipo === 'prop') {
+    await DB.from('journey_items').delete().eq('property_id', id);
+    await DB.from('services').delete().eq('property_id', id);
+    const { error } = await DB.from('properties').delete().eq('id', id);
+    if (error) { toggleLoading(false); console.error(error); toast('❌ No se pudo eliminar la propiedad'); return; }
+    servicios = servicios.filter(function (s) { return s.propId !== id; });
+    jornadas.forEach(function (j2) { j2.items = j2.items.filter(function (it) { return it.propId !== id; }); });
+    props = props.filter(function (p2) { return p2.id !== id; });
     toggleLoading(false);
+    toast('🗑️ Propiedad eliminada · respaldo generado');
+    ir('propiedades');
+
+  } else if (tipo === 'crew') {
+    // Jornadas de la cuadrilla (items primero) → se eliminan (van en el respaldo)
+    const { data: susJn } = await DB.from('journeys').select('id').eq('crew_id', crew.id);
+    var idsJ = (susJn || []).map(function (x) { return x.id; });
+    if (idsJ.length) await DB.from('journey_items').delete().in('journey_id', idsJ);
+    await DB.from('journeys').delete().eq('crew_id', crew.id);
+    // Propiedades y servicios históricos: se conservan, solo quedan sin cuadrilla
+    await DB.from('properties').update({ crew_id: null }).eq('crew_id', crew.id);
+    await DB.from('services').update({ crew_id: null }).eq('crew_id', crew.id);
+    const { error } = await DB.from('crews').delete().eq('id', crew.id);
+    if (error) { toggleLoading(false); console.error(error); toast('❌ No se pudo eliminar la cuadrilla'); return; }
+    jornadas = jornadas.filter(function (j2) { return j2.cuadrilla !== id; });
+    props.forEach(function (p2) { if (p2.cuadrilla === id) { p2.cuadrilla = ''; p2.crew_id = null; } });
+    servicios.forEach(function (s) { if (s.cuadrilla === id) s.cuadrilla = ''; });
     crews = crews.filter(function (c) { return c.nombre !== id; });
-    toast('🗑️ Cuadrilla eliminada de la nube');
-    ir('cuadrillas');
-  }
-  else if (t === 'jornada') {
-    var j = jornadaDe(id);
-    if (j && !/^J-\d+$/.test(j.id)) {
-      const { error } = await DB.from('journeys').delete().eq('id', j.id);
-      if (error) { toggleLoading(false); console.error(error); toast('❌ No se pudo eliminar la jornada'); cerrarDel(); return; }
-    }
     toggleLoading(false);
+    toast('🗑️ Cuadrilla eliminada · respaldo generado');
+    ir('cuadrillas');
+
+  } else if (tipo === 'jornada') {
+    var j3 = jornadaDe(id);
+    if (j3 && !/^J-\d+$/.test(j3.id)) { // solo si es jornada real en la nube
+      const { error } = await DB.from('journeys').delete().eq('id', j3.id);
+      if (error) { toggleLoading(false); console.error(error); toast('❌ No se pudo eliminar la jornada'); return; }
+    }
     jornadas = jornadas.filter(function (x) { return x.id !== id; });
-    toast('🗑️ Jornada eliminada');
+    toggleLoading(false);
+    toast('🗑️ Jornada eliminada · respaldo generado');
     ir('rutas');
   }
-  cerrarDel();
 }
 
 /* ── 16.h RESTAURAR DEMO ───────────────────────────────────────────────────
    TODO(FASE 3): eliminar junto con todo [JS-01b]. Con Supabase activo es
    peligroso: mezcla IDs ficticios (AUS-001, J-0001…) con datos reales. */
-function restaurarDemo() {
-  if (!confirm('⚠️ Esto reemplaza los datos EN MEMORIA por el set de demostración.\n\nNO borra nada en Supabase, pero al recargar la página volverán los datos reales de la nube.\n\n¿Continuar?')) return;
+async function restaurarDemo() {
+  var ok = await confirmarModal({
+    tipo: 'warn',
+    titulo: '¿Restaurar datos demo?',
+    mensaje: 'Reemplaza los datos <b>EN MEMORIA</b> por el set de demostración.<br><br>NO borra nada en Supabase: al recargar la página volverán los datos reales de la nube.',
+    textoOk: 'Sí, restaurar',
+    textoCancelar: 'Cancelar'
+  });
+  if (!ok) return;
   props = seedProps();
   crews = JSON.parse(JSON.stringify(CREW_SEED));
   servicios = generarServiciosDemo();
@@ -3252,6 +3320,130 @@ function restaurarDemo() {
   estado.rutaFiltros = { periodo: 'semana', cuadrilla: '' };
   cerrarMenu(); renderApp();
   toast('↺ Datos demo restaurados (solo en memoria)');
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   [JS-19] SISTEMA DE MODALES DE CONFIRMACIÓN + PAPELERA DE RESPALDOS
+   ───────────────────────────────────────────────────────────────────────────
+   - confirmarModal(opciones) → Promise<boolean>. Reemplaza a confirm()/alert()
+     nativos. Se autoinyecta en el DOM la primera vez que se usa.
+     Tipos: 'danger' (rojo) · 'warn' (ámbar) · 'info' (azul) · 'success' (verde)
+   - respaldarEliminacion(): descarga un JSON con todo lo eliminado y lo
+     registra en la "papelera" local (localStorage, por dispositivo).
+     TODO(FASE 4): soft-delete en Supabase (columna deleted_at) para respaldo
+     permanente en la nube; esta papelera local es la solución mientras tanto.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+var CONFIRM_RESOLVE = null;
+
+/** Estilos por tipo de modal. */
+var CONFIRM_TIPOS = {
+  danger:  { icono: '🗑️', iconBg: 'bg-rose-100',   btn: 'bg-rose-600 hover:bg-rose-700' },
+  warn:    { icono: '⚠️', iconBg: 'bg-amber-100',   btn: 'bg-amber-500 hover:bg-amber-600' },
+  info:    { icono: 'ℹ️', iconBg: 'bg-sky-100',     btn: 'bg-sky-600 hover:bg-sky-700' },
+  success: { icono: '✅', iconBg: 'bg-emerald-100', btn: 'bg-emerald-600 hover:bg-emerald-700' }
+};
+
+/** Crea el esqueleto del modal una sola vez (inyección dinámica en el body). */
+function asegurarModalConfirm() {
+  if ($('modalConfirmGen')) return;
+  var div = document.createElement('div');
+  div.id = 'modalConfirmGen';
+  div.className = 'hidden fixed inset-0 z-[105] flex items-center justify-center p-4';
+  div.innerHTML =
+    // Backdrop: clic fuera = cancelar
+    '<div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onclick="resolverConfirmModal(false)"></div>'
+    + '<div class="relative bg-white rounded-3xl p-5 sm:p-7 max-w-sm w-full pop shadow-2xl text-center">'
+    + '<div id="cgIcono" class="w-16 h-16 mx-auto rounded-2xl flex items-center justify-center text-3xl"></div>'
+    + '<h3 id="cgTitulo" class="font-extrabold text-lg mt-4 leading-tight"></h3>'
+    + '<div id="cgMensaje" class="text-slate-500 text-sm mt-2 break-words"></div>'
+    // Móvil: botones apilados (OK arriba, Cancelar abajo). PC: lado a lado.
+    + '<div class="flex flex-col-reverse sm:flex-row gap-3 mt-6">'
+    + '<button id="cgCancelar" class="flex-1 w-full px-4 py-3 rounded-xl border border-slate-200 font-semibold text-sm text-slate-600 hover:bg-slate-50 transition active:scale-95">Cancelar</button>'
+    + '<button id="cgOk" class="flex-1 w-full px-4 py-3 rounded-xl text-white font-bold text-sm shadow-lg transition active:scale-95">Aceptar</button>'
+    + '</div></div>';
+  document.body.appendChild(div);
+  $('cgCancelar').onclick = function () { resolverConfirmModal(false); };
+  $('cgOk').onclick = function () { resolverConfirmModal(true); };
+}
+
+/**
+ * Modal de confirmación basado en Promesas (sustituye a confirm()).
+ * @param {Object} o { tipo, titulo, mensaje(HTML), textoOk, textoCancelar, icono }
+ * @returns {Promise<boolean>} true si el usuario confirma
+ * Uso: var ok = await confirmarModal({ tipo:'warn', titulo:'…', mensaje:'…' });
+ */
+function confirmarModal(o) {
+  return new Promise(function (resolve) {
+    asegurarModalConfirm();
+    var t = CONFIRM_TIPOS[o.tipo] || CONFIRM_TIPOS.info;
+    $('cgIcono').textContent = o.icono || t.icono;
+    $('cgIcono').className = 'w-16 h-16 mx-auto rounded-2xl flex items-center justify-center text-3xl ' + t.iconBg;
+    $('cgTitulo').textContent = o.titulo || '¿Confirmar?';
+    $('cgMensaje').innerHTML = o.mensaje || '';
+    var btnOk = $('cgOk');
+    btnOk.textContent = o.textoOk || 'Aceptar';
+    btnOk.className = 'flex-1 w-full px-4 py-3 rounded-xl text-white font-bold text-sm shadow-lg transition active:scale-95 ' + t.btn;
+    $('cgCancelar').textContent = o.textoCancelar || 'Cancelar';
+    CONFIRM_RESOLVE = resolve;
+    $('modalConfirmGen').classList.remove('hidden');
+  });
+}
+
+/** Cierra el modal resolviendo la promesa con true/false. */
+function resolverConfirmModal(val) {
+  var m = $('modalConfirmGen');
+  if (!m || m.classList.contains('hidden')) return;
+  m.classList.add('hidden');
+  if (CONFIRM_RESOLVE) { CONFIRM_RESOLVE(val); CONFIRM_RESOLVE = null; }
+}
+/** Atajo para el listener de Escape: cierra cancelando. */
+function cerrarConfirmModal() { resolverConfirmModal(false); }
+
+/* ── PAPELERA LOCAL ──
+   Registro de todo lo eliminado, con su contenido completo cuando cabe.
+   Es por dispositivo/navegador; la copia robusta es el archivo descargado. */
+var PAPELERA_KEY = 'hwc_papelera_v1';
+
+/** Lee la papelera local ([] si no existe o está corrupta). */
+function papeleraDe() {
+  try { return JSON.parse(localStorage.getItem(PAPELERA_KEY)) || []; }
+  catch (e) { return []; }
+}
+
+/** Guarda la papelera; devuelve false si se acabó el espacio (quota). */
+function guardarPapelera(arr) {
+  try { localStorage.setItem(PAPELERA_KEY, JSON.stringify(arr)); return true; }
+  catch (e) { return false; }
+}
+
+/**
+ * RESPALDO PRE-ELIMINACIÓN (obligatorio antes de borrar en la nube):
+ * 1) registra la entrada completa en la papelera local (si hay espacio),
+ * 2) descarga automáticamente el respaldo completo como archivo .json.
+ * @param {string} archivo  Nombre del archivo descargable
+ * @param {string} resumen  Descripción corta de lo eliminado
+ * @param {*}      datos    Contenido completo a preservar
+ */
+function respaldarEliminacion(archivo, resumen, datos) {
+  var entrada = { ts: Date.now(), resumen: resumen, datos: datos };
+  var papelera = papeleraDe();
+  papelera.push(entrada);
+  if (!guardarPapelera(papelera)) {
+    // Sin espacio: conserva solo los metadatos y avisa
+    papelera[papelera.length - 1] = { ts: entrada.ts, resumen: resumen, datos: null, nota: 'Contenido completo solo en el archivo descargado' };
+    guardarPapelera(papelera);
+    toast('⚠️ Papelera local llena · respaldo completo en el archivo descargado');
+  }
+  try {
+    var blob = new Blob([JSON.stringify(entrada, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = archivo;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+  } catch (e) { console.error('No se pudo descargar el respaldo:', e); }
 }
 
 
@@ -3365,7 +3557,7 @@ document.addEventListener('click', function (e) {
 });
 // ESC cierra menú y modales
 document.addEventListener('keydown', function (e) {
-  if (e.key === 'Escape') { cerrarMenu(); cerrarDel(); cerrarServModal(); cerrarPosModal(); cerrarAddProp(); }
+  if (e.key === 'Escape') { cerrarMenu(); cerrarServModal(); cerrarPosModal(); cerrarAddProp(); cerrarConfirmModal(); cerrarAsignarCua(); }
 });
 // Recalcular sidebar al redimensionar
 window.addEventListener('resize', aplicarSidebar);
